@@ -6,7 +6,7 @@ A Retrieval-Augmented Generation (RAG) system for analyzing and querying financi
 
 - **Interactive Chat Interface**: Gradio-based web UI for asking questions about financial complaints
 - **RAG Pipeline**: Combines semantic search (FAISS) with language generation (FLAN-T5) for accurate, context-aware responses
-- **Stratified Sampling**: Intelligent sampling ensures proportional representation across product categories
+- **Stratified Sampling**: Creates a 10,000-15,000 complaint subset with proportional representation across all four product categories (Credit card, Personal loan, Savings account, Money transfers) before chunking, ensuring the index reflects a balanced dataset
 - **Text Preprocessing**: Comprehensive cleaning and normalization of complaint narratives
 - **Vector Store**: Efficient semantic search using FAISS with sentence transformer embeddings
 - **Configurable Settings**: Easy-to-modify configuration for models, chunking, and retrieval parameters
@@ -96,14 +96,29 @@ Run the chunking, embedding, and indexing script to create the FAISS vector stor
 python src/chunk_embed_index.py
 ```
 
-This script will:
-- Load the filtered complaint dataset
-- Perform stratified sampling (10,000-15,000 records) to ensure product diversity
-- Chunk complaint narratives into smaller segments
-- Generate embeddings using sentence transformers
-- Create and save a FAISS vector store with metadata
+This script performs the following pipeline **in order**:
 
-**Note**: This step may take several minutes depending on your dataset size and hardware.
+1. **Stratified Sampling (REQUIRED STEP)**: Creates a 10,000-15,000 complaint subset 
+   with **proportional representation** across all four product categories 
+   (Credit card, Personal loan, Savings account, Money transfers). This sampling 
+   step ensures the vector store reflects a balanced dataset where each product 
+   category is represented proportionally to its frequency in the original dataset.
+   The stratified sample is created **before chunking** to maintain balanced 
+   representation in the final index.
+
+2. **Text Chunking**: Splits the sampled complaint narratives into smaller segments 
+   using LangChain's RecursiveCharacterTextSplitter (512 characters per chunk with 
+   50 character overlap).
+
+3. **Embedding Generation**: Generates dense vector embeddings for each chunk using 
+   the sentence-transformers/all-MiniLM-L6-v2 model (384-dimensional embeddings).
+
+4. **Vector Store Creation**: Builds and saves a FAISS index with metadata storage 
+   for efficient similarity search.
+
+**Note**: This step may take several minutes depending on your dataset size and hardware. 
+The stratified sampling step is critical for ensuring the vector store maintains 
+balanced representation across product categories.
 
 ### Step 3: Launch the Chatbot
 
