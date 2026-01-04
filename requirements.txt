@@ -21,3 +21,6 @@ torch>=2.0.0
 
 # Gradio (for UI)
 gradio>=4.0.0
+
+# Word document processing
+python-docx>=1.0.0
