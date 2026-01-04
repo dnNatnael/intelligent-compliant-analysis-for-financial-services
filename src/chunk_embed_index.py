@@ -1,11 +1,25 @@
 """
 Text Chunking, Embedding, and Vector Store Indexing Script
 
-This script performs:
-1. Stratified sampling of complaints (10,000-15,000 records)
-2. Text chunking using LangChain's RecursiveCharacterTextSplitter
-3. Embedding generation using sentence-transformers/all-MiniLM-L6-v2
-4. Vector store creation using FAISS with metadata storage
+This script performs a complete pipeline for building a vector store from complaint data:
+
+1. STRATIFIED SAMPLING: Creates a 10,000-15,000 complaint subset with proportional 
+   representation across all product categories (Credit card, Personal loan, 
+   Savings account, Money transfers) before chunking. This ensures the index 
+   reflects a balanced dataset representative of all products.
+
+2. TEXT CHUNKING: Splits complaint narratives into smaller segments using 
+   LangChain's RecursiveCharacterTextSplitter.
+
+3. EMBEDDING GENERATION: Generates dense vector embeddings using 
+   sentence-transformers/all-MiniLM-L6-v2.
+
+4. VECTOR STORE CREATION: Builds and persists a FAISS index with metadata storage
+   for efficient similarity search.
+
+The stratified sampling step is critical: it ensures the vector store maintains
+balanced representation across product categories, which is essential for unbiased
+retrieval during RAG queries.
 """
 
 import pandas as pd
@@ -115,16 +129,27 @@ def stratified_sample(
     Create a stratified sample of complaints ensuring proportional representation
     across all product categories.
     
+    This function creates a 10,000-15,000 complaint subset (configurable via 
+    min_size and max_size) with proportional representation across all product 
+    categories (typically Credit card, Personal loan, Savings account, Money 
+    transfers). The sampling preserves the relative distribution of each product 
+    category in the original dataset, ensuring the resulting index reflects a 
+    balanced and representative dataset.
+    
+    This stratified sampling step MUST be performed BEFORE chunking to ensure
+    the vector store maintains balanced representation across products.
+    
     Args:
         df: DataFrame containing complaints
         product_column: Name of the column containing product categories
         narrative_column: Name of the column containing complaint narratives
-        min_size: Minimum sample size
-        max_size: Maximum sample size
+        min_size: Minimum sample size (default: 10,000)
+        max_size: Maximum sample size (default: 15,000)
         random_state: Random seed for reproducibility
         
     Returns:
-        Stratified sample DataFrame
+        Stratified sample DataFrame with proportional representation across
+        product categories
     """
     print("=" * 80)
     print("STRATIFIED SAMPLING")
@@ -327,7 +352,19 @@ def create_vector_store(
 
 
 def main():
-    """Main function to run the chunking, embedding, and indexing pipeline."""
+    """
+    Main function to run the complete pipeline:
+    
+    1. Load filtered complaint dataset
+    2. Perform stratified sampling (10k-15k records with proportional 
+       representation across product categories)
+    3. Chunk the sampled narratives
+    4. Generate embeddings
+    5. Create and save FAISS vector store
+    
+    The stratified sampling step ensures the index reflects a balanced dataset
+    with proportional representation across all product categories.
+    """
     print("=" * 80)
     print("COMPLAINT ANALYSIS: CHUNKING, EMBEDDING, AND INDEXING")
     print("=" * 80)
