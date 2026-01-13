@@ -1,13 +1,16 @@
 # =============================================================================
-# gradio_app.py - Gradio Chatbot UI for RAG Pipeline
+# gradio_app.py - Enhanced Gradio Chatbot UI for RAG Pipeline
 # =============================================================================
 """
-A simple Gradio chatbot for interactive RAG question answering.
+An enhanced Gradio chatbot for interactive RAG question answering with source display.
 
 Run with: python gradio_app.py
 
 Features:
 - Chat interface for asking questions
+- Displays source text chunks below answers for transparency
+- Streaming response generation (token-by-token)
+- Clear button to reset conversation
 - Reuses existing RAGPipeline (FAISS + FLAN-T5)
 """
 
@@ -15,6 +18,7 @@ Features:
 import sys
 # Path helps us build file paths in a cross-platform way
 from pathlib import Path
+import time
 
 # Add project root to the Python import path so we can import `src.*`
 project_root = Path(__file__).parent
@@ -31,6 +35,7 @@ import gradio as gr
 from src.rag_pipeline import RAGPipeline
 # config holds constants like model names and vector store path
 from src import config
+from src.llm import format_docs_for_context
 
 
 # Safety cap: limit how much context we feed to the small FLAN-T5 model
@@ -65,24 +70,73 @@ def load_rag_pipeline():
 
 
 # =============================================================================
-# CHAT FUNCTION
+# HELPER FUNCTIONS
 # =============================================================================
 
-def chat(message: str, history: list, k: int):
+def format_sources_for_display(sources):
     """
-    Process a user message and return the assistant response.
+    Format retrieved source documents for display in the UI.
+    
+    Args:
+        sources: List of Document objects from retrieval
+        
+    Returns:
+        Formatted HTML string displaying sources
+    """
+    if not sources:
+        return "**No sources retrieved.**"
+    
+    html_parts = ["<div style='margin-top: 20px; padding: 15px; background-color: #f5f5f5; border-radius: 8px;'>"]
+    html_parts.append("<h3 style='margin-top: 0; color: #333;'>📚 Sources Used:</h3>")
+    
+    for i, doc in enumerate(sources, start=1):
+        meta = doc.metadata or {}
+        source_info = []
+        for key in ("complaint_id", "product", "chunk_index"):
+            if key in meta:
+                source_info.append(f"<strong>{key}</strong>: {meta[key]}")
+        
+        source_header = f"<strong>Source {i}</strong>"
+        if source_info:
+            source_header += f" ({', '.join(source_info)})"
+        
+        # Truncate long content for display
+        content = doc.page_content.replace("\n", " ").strip()
+        if len(content) > 300:
+            content = content[:300] + "..."
+        
+        html_parts.append(f"""
+        <div style='margin-bottom: 15px; padding: 10px; background-color: white; border-left: 3px solid #4CAF50; border-radius: 4px;'>
+            <div style='color: #666; font-size: 0.9em; margin-bottom: 5px;'>{source_header}</div>
+            <div style='color: #333; line-height: 1.5;'>{content}</div>
+        </div>
+        """)
+    
+    html_parts.append("</div>")
+    return "".join(html_parts)
+
+
+# =============================================================================
+# CHAT FUNCTION WITH STREAMING
+# =============================================================================
+
+def chat_with_sources(message: str, history: list, k: int, enable_streaming: bool = True):
+    """
+    Process a user message and return the assistant response with sources.
     
     Args:
         message: The user's question
         history: List of (user_msg, assistant_msg) tuples (chat history)
         k: Number of sources to retrieve
+        enable_streaming: Whether to stream the response token-by-token
         
-    Returns:
-        Answer text
+    Yields:
+        Tuple of (answer_text, sources_html) for streaming updates
     """
     # 1) Basic input validation
     if not message.strip():
-        return "Please enter a question."
+        yield "Please enter a question.", ""
+        return
     
     # 2) Load the pipeline (cached so we don't reload models every message)
     try:
@@ -96,13 +150,14 @@ def chat(message: str, history: list, k: int):
             "2. `01_chunk_embed_index.ipynb` - Create the FAISS index\n\n"
             f"Error: {e}"
         )
-        return error_msg
+        yield error_msg, ""
+        return
     except Exception as e:
         # Catch-all for unexpected loading errors
-        return f"Error loading RAG pipeline: {e}"
+        yield f"Error loading RAG pipeline: {e}", ""
+        return
     
     # 3) Update retriever settings (k = number of retrieved chunks)
-    # In this simplified UI we pass a fixed k, but the function still supports changing it.
     if rag.retrieval_k != k:
         rag.retrieval_k = k
         # Re-create the retriever with the new k
@@ -112,36 +167,44 @@ def chat(message: str, history: list, k: int):
         )
     
     # 4) Run the RAG steps:
-    # - retrieve relevant documents
-    # - format them into a context string
-    # - truncate context to reduce prompt length
-    # - generate final answer
     try:
         # Retrieve top-k relevant chunks from FAISS
         sources = rag.retrieve(message)
 
         # Format the retrieved chunks into a single context string for the prompt
-        from src.llm import format_docs_for_context
-
         formatted_context = format_docs_for_context(sources)
         # Truncate by characters to reduce risk of exceeding model max length
         if len(formatted_context) > MAX_CONTEXT_CHARS:
             formatted_context = formatted_context[:MAX_CONTEXT_CHARS] + "..."
 
+        # Format sources for display (we'll show this at the end)
+        sources_html = format_sources_for_display(sources)
+        
         # Generate an answer using the LLM
-        answer = rag.generate(message, formatted_context)
-
-        # Minimal response object (kept from earlier versions; not strictly required now)
-        class _Resp:
-            def __init__(self, answer, sources):
-                self.answer = answer
-                self.sources = sources
-
-        response = _Resp(answer=answer, sources=sources)
+        if enable_streaming:
+            # Simulate streaming by generating and yielding token-by-token
+            # Note: FLAN-T5 doesn't support true streaming, so we simulate it
+            answer = rag.generate(message, formatted_context)
+            
+            # Simulate streaming by yielding partial answers
+            accumulated = ""
+            words = answer.split()
+            for i, word in enumerate(words):
+                accumulated += word + " "
+                # Yield partial answer with sources placeholder
+                yield accumulated.strip(), ""
+                # Small delay to simulate streaming
+                time.sleep(0.05)
+            
+            # Final yield with complete answer and sources
+            yield answer, sources_html
+        else:
+            # Non-streaming: generate and return immediately
+            answer = rag.generate(message, formatted_context)
+            yield answer, sources_html
+            
     except Exception as e:
-        return f"Error generating answer: {e}"
-    
-    return response.answer
+        yield f"Error generating answer: {e}", ""
 
 
 # =============================================================================
@@ -150,36 +213,95 @@ def chat(message: str, history: list, k: int):
 
 def build_app():
     """
-    Build and return the Gradio Blocks app.
+    Build and return the enhanced Gradio Blocks app with source display.
     """
+    # Custom CSS for better styling
+    custom_css = """
+    .gradio-container {
+        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    }
+    .source-display {
+        margin-top: 20px;
+        padding: 15px;
+        background-color: #f8f9fa;
+        border-radius: 8px;
+        border: 1px solid #dee2e6;
+    }
+    """
+    
     # Blocks is Gradio's layout container
-    with gr.Blocks(title="Support Ticket RAG Chatbot") as app:
-        # Simple title
-        gr.Markdown("# Support Ticket RAG Chatbot")
-
-        # Chatbot displays the conversation
-        chatbot = gr.Chatbot(label="Chat", height=500)
-
-        # Row: user input + send button
+    with gr.Blocks(title="Financial Services RAG Chatbot", theme=gr.themes.Soft(), css=custom_css) as app:
+        # Header with title and description
+        gr.Markdown("""
+        # 🏦 Intelligent Complaint Analysis Chatbot
+        
+        Ask questions about financial service complaints and get AI-powered answers with source citations.
+        """)
+        
+        # Main chat interface
+        chatbot = gr.Chatbot(
+            label="Conversation",
+            height=400,
+            show_copy_button=True,
+            avatar_images=(None, "🤖")
+        )
+        
+        # Sources display area (hidden initially, shown after answer)
+        sources_display = gr.HTML(
+            label="Sources",
+            visible=True,
+            elem_classes=["source-display"]
+        )
+        
+        # Input section
         with gr.Row():
-            # Textbox for the user's question
             msg_input = gr.Textbox(
-                placeholder="Ask a question about the support tickets...",
+                placeholder="Type your question here... (e.g., 'What are common issues with credit cards?')",
                 show_label=False,
-                scale=4,
+                scale=5,
+                container=False,
             )
-            # Button to submit the question
-            send_btn = gr.Button("Send", variant="primary", scale=1)
-
-        # Button to clear the chat
-        clear_btn = gr.Button("Clear")
+            send_btn = gr.Button("Ask", variant="primary", scale=1, size="lg")
+        
+        # Controls row
+        with gr.Row():
+            clear_btn = gr.Button("Clear Conversation", variant="secondary")
+            streaming_toggle = gr.Checkbox(
+                label="Enable Streaming",
+                value=True,
+                info="Show response token-by-token"
+            )
+            k_slider = gr.Slider(
+                minimum=1,
+                maximum=10,
+                value=config.RETRIEVAL_K,
+                step=1,
+                label="Number of Sources (k)",
+                info="How many document chunks to retrieve"
+            )
+        
+        # Info section
+        with gr.Accordion("ℹ️ About this Chatbot", open=False):
+            gr.Markdown("""
+            **How it works:**
+            1. Your question is converted to a vector embedding
+            2. The system searches a database of complaint documents for relevant chunks
+            3. The AI generates an answer based on the retrieved context
+            4. Source documents are displayed below for verification
+            
+            **Features:**
+            - ✅ Retrieval-Augmented Generation (RAG) for accurate answers
+            - ✅ Source citations for transparency and trust
+            - ✅ Streaming responses for better user experience
+            - ✅ Adjustable retrieval parameters
+            """)
         
         # Footer
         gr.Markdown(
             """
             ---
             <center>
-            Built with LangChain, FAISS, and Gradio | RAG Pipeline Demo
+            <small>Built with LangChain, FAISS, and Gradio | RAG Pipeline for Financial Services</small>
             </center>
             """,
         )
@@ -188,42 +310,55 @@ def build_app():
         # EVENT HANDLERS
         # =================================================================
         
-        def respond(message, chat_history):
-            """Handle user message and update chat."""
-            # Call our RAG chat function to get an answer
-            answer = chat(message, chat_history, k=config.RETRIEVAL_K)
+        def respond(message, chat_history, k, enable_streaming):
+            """Handle user message and update chat with streaming support."""
+            if not message.strip():
+                return chat_history, ""
+            
+            # Initialize chat history if needed
             if chat_history is None:
-                # If it's the first message, start an empty history list
                 chat_history = []
-            # Gradio Chatbot expects ChatMessage objects
-            chat_history = chat_history + [
-                gr.ChatMessage(role="user", content=message),
-                gr.ChatMessage(role="assistant", content=answer),
-            ]
-            # Return empty textbox + updated chat history
-            return "", chat_history
+            
+            # Add user message to history
+            chat_history.append(gr.ChatMessage(role="user", content=message))
+            
+            # Stream the response
+            sources_html = ""
+            for answer_text, sources in chat_with_sources(message, chat_history, k, enable_streaming):
+                sources_html = sources if sources else sources_html
+                # Update chat history with current answer
+                if chat_history and chat_history[-1].role == "assistant":
+                    chat_history[-1] = gr.ChatMessage(role="assistant", content=answer_text)
+                else:
+                    chat_history.append(gr.ChatMessage(role="assistant", content=answer_text))
+                yield chat_history, sources_html
 
         def clear_chat():
-            """Clear chat history."""
-            # Returning an empty list resets the chatbot
-            return []
+            """Clear chat history and sources."""
+            return [], ""
 
         # Wire up events
         send_btn.click(
             fn=respond,
-            inputs=[msg_input, chatbot],
-            outputs=[msg_input, chatbot],
+            inputs=[msg_input, chatbot, k_slider, streaming_toggle],
+            outputs=[chatbot, sources_display],
+        ).then(
+            lambda: "",  # Clear input after sending
+            outputs=[msg_input]
         )
         
         msg_input.submit(
             fn=respond,
-            inputs=[msg_input, chatbot],
-            outputs=[msg_input, chatbot],
+            inputs=[msg_input, chatbot, k_slider, streaming_toggle],
+            outputs=[chatbot, sources_display],
+        ).then(
+            lambda: "",  # Clear input after sending
+            outputs=[msg_input]
         )
         
         clear_btn.click(
             fn=clear_chat,
-            outputs=[chatbot],
+            outputs=[chatbot, sources_display],
         )
     
     return app
@@ -236,15 +371,22 @@ def build_app():
 if __name__ == "__main__":
     # Print helpful info when starting the app
     print("=" * 60)
-    print("🎫 Starting Support Ticket RAG Chatbot (Gradio)")
+    print("🏦 Starting Intelligent Complaint Analysis Chatbot (Gradio)")
     print("=" * 60)
     # Show key configuration so beginners know what is being used
     print(f"Vector store: {config.VECTOR_STORE_DIR}")
     print(f"Embedding model: {config.EMBEDDING_MODEL_NAME}")
     print(f"LLM model: {config.LLM_MODEL_NAME}")
+    print(f"Retrieval k: {config.RETRIEVAL_K}")
+    print("=" * 60)
+    print("🌐 Opening web interface...")
     print("=" * 60)
     
     # Build the UI
     app = build_app()
     # Launch starts the local web server
-    app.launch(theme=gr.themes.Soft())
+    app.launch(
+        server_name="0.0.0.0",  # Allow access from network
+        server_port=7860,       # Default Gradio port
+        share=False            # Set to True to create a public link
+    )
